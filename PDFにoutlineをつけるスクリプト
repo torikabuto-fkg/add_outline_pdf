@@ -1,0 +1,452 @@
+# PDFにoutlineをつけるスクリプト
+#
+# 概要:
+#  PDFファイルの本文中にある目次の文字列を解析し、
+#  解析結果を元にPDFにアウトラインを設定する
+# セットアップ:
+#  pip install pdfminer.six
+#  pip install pdfrw
+#  pip install reportlab
+# 実行方法:
+#  python add_outline_to_pdf.py
+
+
+import io
+import re
+from pathlib import Path
+from pdfminer.converter import TextConverter
+from pdfminer.layout import LAParams
+from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
+from pdfminer.pdfpage import PDFPage
+from pdfrw import PdfReader
+from pdfrw.buildxobj import pagexobj
+from pdfrw.toreportlab import makerl
+from reportlab.pdfgen.canvas import Canvas
+
+
+# 設定項目
+# 入力ファイル名
+input_pdf = "病気が見える_小児科_OCR.pdf"
+# 出力ファイル名
+output_pdf = "病気が見える_小児科_OCR_目次付き.pdf"
+
+# ページ番号のオフセット調整
+page_offset = 21
+
+# 目次が含まれるページ番号 (0始まりで指定)
+index_pages = list(range(12, 20))
+
+# レベル1として扱うページ番号のリスト（目次ページ内の実際のページ位置）
+# 例: 目次の15ページ目（0-indexedで14）にある項目をレベル1にする場合
+level1_index_pages = []  # [14, 15, 16] のように指定
+
+# 手動でレベル1に指定するタイトル（部分一致）
+manual_level1_keywords = [
+    '小児科総論', '新生児', '先天異常', '消化器疾患', '腫瘍', '循環器疾患', 
+    '代謝・内分泌疾患', '腎・泌尿器・生殖器疾患', '免疫・アレルギー疾患',
+    '膠原病', '血液・造血器疾患', '感染症', '呼吸器疾患', '神経疾患', '精神疾患', 
+    '骨・関節疾患'
+]
+
+# OCR誤植の補正辞書（基本的なもの）
+ocr_corrections = {
+    'ﾡ': '腫',
+    '•': '・',
+    '©': '15',
+    '〔': '[',
+    '〕': ']',
+    'ﾱ': 'ン',
+    'W川is': 'Willis',
+    'ﾟ': '゜',
+    'ﾞ': '゛',
+}
+
+# 除外するキーワード
+exclude_keywords = [
+    'An Illustrated Reference Guide',
+    'An lllustrated Reference Guide',
+    'column',
+    'supplement',
+    'Supplement',
+]
+
+
+def correct_ocr_text(text: str) -> str:
+    """OCR誤植を補正する"""
+    # 基本的な辞書による補正
+    for wrong, correct in ocr_corrections.items():
+        text = text.replace(wrong, correct)
+    
+    return text
+
+
+def should_exclude(line: str) -> bool:
+    """除外すべき行かどうかを判定"""
+    line = line.strip()
+    for keyword in exclude_keywords:
+        if keyword.lower() in line.lower():
+            return True
+    return False
+
+
+def detect_level(line: str, title: str, current_page_idx: int) -> int:
+    """
+    目次のレベルを判定
+    
+    Args:
+        line: 目次の行全体
+        title: タイトル部分
+        current_page_idx: 現在の目次ページのインデックス
+    
+    Returns:
+        レベル (1 or 2)
+    """
+    clean_title = title.strip()
+    
+    # レベル1の判定
+    # 1. 章番号がある
+    if re.match(r'^第\s*[0-9]+\s*章', line):
+        return 1
+    
+    # 2. 指定されたページにある
+    if current_page_idx in level1_index_pages:
+        return 1
+    
+    # 3. 手動指定のキーワードに一致
+    for keyword in manual_level1_keywords:
+        if keyword in clean_title:
+            return 1
+    
+    # それ以外は全てレベル2
+    return 2
+
+
+def get_user_input():
+    """ユーザーから入力を取得"""
+    print("=" * 60)
+    print("PDF目次追加スクリプト（改良版）")
+    print("=" * 60)
+    print()
+    
+    # PDFファイルのパス入力
+    global input_pdf, output_pdf
+    use_default = input(f"デフォルト設定を使用しますか？ ({input_pdf}) (y/n): ").strip().lower()
+    
+    if use_default != 'y':
+        while True:
+            input_pdf = input("PDFファイルのパスを入力してください: ").strip().strip('"')
+            if Path(input_pdf).exists():
+                break
+            print(f"❌ ファイルが見つかりません: {input_pdf}")
+        
+        input_path = Path(input_pdf)
+        output_pdf = str(input_path.parent / f"{input_path.stem}_目次付き.pdf")
+    
+    print(f"入力ファイル: {input_pdf}")
+    print(f"出力ファイル: {output_pdf}")
+    print()
+    
+    # 目次ページの範囲
+    global index_pages
+    use_default_pages = input(f"目次ページ範囲をデフォルト ({index_pages[0]}〜{index_pages[-1]}) にしますか？ (y/n): ").strip().lower()
+    
+    if use_default_pages != 'y':
+        while True:
+            try:
+                index_start = int(input("目次の開始ページ (0始まり): ").strip())
+                index_end = int(input("目次の終了ページ (0始まり): ").strip())
+                if index_start < index_end:
+                    index_pages = list(range(index_start, index_end))
+                    break
+                print("❌ 開始ページは終了ページより小さい値を入力してください")
+            except ValueError:
+                print("❌ 数字を入力してください")
+    
+    
+    # レベル1キーワードの追加
+    print("\nレベル1として扱いたいキーワードを追加しますか？")
+    print("現在のキーワード:", ', '.join(manual_level1_keywords[:5]), '...')
+    add_keywords = input("追加する場合はカンマ区切りで入力（空白でスキップ）: ").strip()
+    
+    if add_keywords:
+        new_keywords = [k.strip() for k in add_keywords.split(',')]
+        manual_level1_keywords.extend(new_keywords)
+        print(f"✓ キーワードを追加しました: {new_keywords}")
+
+
+def normalize_outline_levels(outlines: list) -> list:
+    """アウトラインのレベルを正規化（レベル1と2のみ）"""
+    if not outlines:
+        return outlines
+    
+    normalized = []
+    current_level = 0
+    
+    for title, page_num, level in outlines:
+        # レベルは1か2のみ
+        if level < 1:
+            level = 1
+        elif level > 2:
+            level = 2
+        
+        # レベル0からの遷移を考慮
+        if current_level == 0:
+            adjusted_level = level
+        elif level > current_level + 1:
+            # レベル0→2の場合はレベル1を挟む
+            adjusted_level = current_level + 1
+        else:
+            adjusted_level = level
+        
+        normalized.append([title, page_num, adjusted_level])
+        current_level = adjusted_level
+    
+    return normalized
+
+
+def calculate_page_offset(input_file: str, index_pages: list) -> int:
+    """ページオフセットを自動計算"""
+    print("\n📊 ページオフセットを自動計算中...")
+    
+    # 最初の目次項目を取得
+    test_title, test_page = find_first_content_title(input_file, index_pages)
+    
+    if not test_title or not test_page:
+        print("⚠️  目次から項目を検出できませんでした")
+        offset = int(input("ページオフセットを手動で入力してください: ").strip())
+        return offset
+    
+    print(f"検証タイトル: {test_title}")
+    print(f"目次記載ページ: {test_page}")
+    
+    # 実際のページを検索
+    actual_page = find_content_page(input_file, test_title, max(index_pages) + 1)
+    
+    if actual_page is not None:
+        offset = actual_page - test_page + 1
+        print(f"✓ 実際のPDFページ: {actual_page + 1}")
+        print(f"✓ 計算されたオフセット: {offset}")
+        return offset
+    else:
+        print(f"⚠️  '{test_title}' が見つかりませんでした")
+        offset = int(input("ページオフセットを手動で入力してください: ").strip())
+        return offset
+
+
+def find_first_content_title(input_file: str, index_pages: list) -> tuple:
+    """目次から最初の項目を見つける"""
+    rsrcmgr = PDFResourceManager()
+    
+    with open(input_file, "rb") as fp:
+        for pidx, page in enumerate(PDFPage.get_pages(fp)):
+            if pidx not in index_pages:
+                continue
+            
+            out_fp = io.StringIO()
+            device = TextConverter(rsrcmgr, out_fp, laparams=LAParams(), imagewriter=None)
+            interpreter = PDFPageInterpreter(rsrcmgr, device)
+            interpreter.process_page(page)
+            out_fp.seek(0)
+            page_str = out_fp.read()
+            
+            page_str = correct_ocr_text(page_str)
+            lines = page_str.split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                if should_exclude(line) or not line:
+                    continue
+                
+                match = re.match(r'^(.+?)\s+([0-9]+)\s*$', line)
+                if match:
+                    title = match.group(1).strip()
+                    page_num = match.group(2).strip()
+                    
+                    title = re.sub(r'[\.。、,\s]+$', '', title)
+                    
+                    if not re.match(r'^[0-9]+$', title) and len(title) > 2:
+                        return title, int(page_num)
+    
+    return None, None
+
+
+def find_content_page(input_file: str, target_title: str, start_page: int = 20) -> int:
+    """指定されたタイトルが実際に含まれるページを探す"""
+    rsrcmgr = PDFResourceManager()
+    
+    with open(input_file, "rb") as fp:
+        for pidx, page in enumerate(PDFPage.get_pages(fp)):
+            if pidx < start_page:
+                continue
+            
+            out_fp = io.StringIO()
+            device = TextConverter(rsrcmgr, out_fp, laparams=LAParams(), imagewriter=None)
+            interpreter = PDFPageInterpreter(rsrcmgr, device)
+            interpreter.process_page(page)
+            out_fp.seek(0)
+            page_str = out_fp.read()
+            
+            if target_title in page_str:
+                return pidx
+    
+    return None
+
+
+def parse_outline(input_file: str, index_pages: list, page_offset: int):
+    """目次を解析"""
+    rsrcmgr = PDFResourceManager()
+    outlines = []
+    
+    print("\n📖 目次の解析を開始します...")
+    
+    with open(input_file, "rb") as fp:
+        for pidx, page in enumerate(PDFPage.get_pages(fp)):
+            if pidx not in index_pages:
+                continue
+            
+            out_fp = io.StringIO()
+            device = TextConverter(rsrcmgr, out_fp, laparams=LAParams(), imagewriter=None)
+            interpreter = PDFPageInterpreter(rsrcmgr, device)
+            interpreter.process_page(page)
+            out_fp.seek(0)
+            page_str = out_fp.read()
+            
+            # OCR誤植を補正
+            page_str = correct_ocr_text(page_str)
+            
+            lines = page_str.split('\n')
+            for i, line in enumerate(lines):
+                line = line.strip()
+                
+                if not line or should_exclude(line):
+                    continue
+                
+                # パターン1: タイトル ページ番号
+                match = re.match(r'^(.+?)\s+([0-9]+)\s*$', line)
+                if match:
+                    title = match.group(1).strip()
+                    page_num = match.group(2).strip()
+                    
+                    title = re.sub(r'[\.。、,\s]+$', '', title)
+                    
+                    if not re.match(r'^[0-9]+$', title):
+                        level = detect_level(line, title, pidx)
+                        try:
+                            actual_page = int(page_num) - 1 + page_offset
+                            outlines.append([title, actual_page, level])
+                            level_mark = "★" if level == 1 else "  "
+                            print(f"{level_mark} {title} (レベル{level})")
+                        except ValueError:
+                            pass
+                    continue
+                
+                # パターン2: タイトルのみ（次行にページ番号）
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1].strip()
+                    if re.match(r'^[0-9]+\s*$', next_line):
+                        title = line
+                        page_num = next_line
+                        
+                        title = re.sub(r'[\.。、,\s]+$', '', title)
+                        
+                        if not re.match(r'^[0-9]+$', title):
+                            level = detect_level(line, title, pidx)
+                            try:
+                                actual_page = int(page_num) - 1 + page_offset
+                                outlines.append([title, actual_page, level])
+                                level_mark = "★" if level == 1 else "  "
+                                print(f"{level_mark} {title} (レベル{level})")
+                            except ValueError:
+                                pass
+    
+    return outlines
+
+
+def add_outline(input_file: str, output_file: str, outlines: list):
+    """目次をPDFに追加"""
+    print("\n🔖 アウトラインを追加中...")
+    
+    outlines = normalize_outline_levels(outlines)
+    
+    pages = PdfReader(input_file, decompress=False).pages
+    out_canvas = Canvas(output_file)
+    
+    out_canvas.bookmarkPage("toc")
+    out_canvas.addOutlineEntry("目次", "toc", 0)
+    
+    added_count = 0
+    error_count = 0
+    
+    for idx, page in enumerate(pages):
+        out_page = pagexobj(page)
+        out_canvas.setPageSize(tuple(out_page.BBox[2:]))
+        out_canvas.doForm(makerl(out_canvas, out_page))
+        
+        target_outlines = [d for d in outlines if idx == int(d[1])]
+        for bookmark_idx, outline_data in enumerate(target_outlines):
+            out_bookmark = str(idx) + "p-" + str(bookmark_idx)
+            out_canvas.bookmarkPage(out_bookmark)
+            
+            try:
+                out_canvas.addOutlineEntry(outline_data[0], out_bookmark, outline_data[2])
+                added_count += 1
+            except ValueError as e:
+                error_count += 1
+                try:
+                    out_canvas.addOutlineEntry(outline_data[0], out_bookmark, 2)
+                    added_count += 1
+                except:
+                    pass
+        
+        out_canvas.showPage()
+    
+    out_canvas.showOutline()
+    out_canvas.save()
+    
+    print(f"\n✅ 完了！")
+    print(f"   追加成功: {added_count}個")
+    if error_count > 0:
+        print(f"   エラー: {error_count}個（一部は自動修正）")
+
+
+if __name__ == '__main__':
+    try:
+        print("=" * 60)
+        print("PDF目次追加スクリプト（改良版）")
+        print("=" * 60)
+        print()
+        
+        # ユーザー入力
+        get_user_input()
+        
+        print("\n" + "=" * 60)
+        print("処理を開始します")
+        print("=" * 60)
+        
+        # ページオフセットの計算
+        auto_offset = input("\nページオフセットを自動計算しますか？ (y/n): ").strip().lower()
+        if auto_offset == 'y':
+            page_offset = calculate_page_offset(input_pdf, index_pages)
+        
+        print(f"\n使用するページオフセット: {page_offset}")
+        
+        # 目次を解析
+        outline_list = parse_outline(input_pdf, index_pages, page_offset)
+        print(f"\n合計 {len(outline_list)} 個の目次項目が見つかりました")
+        
+        if len(outline_list) == 0:
+            print("❌ 目次項目が見つかりませんでした")
+            exit(1)
+        
+        # PDFにアウトラインを追加
+        add_outline(input_pdf, output_pdf, outline_list)
+        print(f"\n📄 出力ファイル: {output_pdf}")
+        
+    except KeyboardInterrupt:
+        print("\n\n処理を中断しました")
+        exit(0)
+    except Exception as e:
+        print(f"\n❌ エラーが発生しました: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        exit(1)
