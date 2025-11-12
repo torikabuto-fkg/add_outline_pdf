@@ -1,13 +1,5 @@
 # PDFにアウトラインを追加する
 
-セットアップ:
-pip install pdfminer.six
-pip install pdfrw
-pip install reportlab
-pip install pandas pdfrw reportlab openpyxl
-
-
-
 CSV/Excelのアウトライン表からPDFにアウトライン（しおり）を追加するスクリプトの使い方
 
 依存ライブラリのインストール
@@ -15,12 +7,14 @@ pip install pandas pdfrw reportlab openpyxl
 
 
 実行例
+事前にPDFに対してExcelかcsvファイルで、class,title,page　列を作成し、その下にclassなら章(class =1に対応）/節(class =2に対応）/column(class =3に対応）で、titleは目次の名前、pageにはページ番号を作成しておく必要があります。（ChatGPTやGeminiで作成すること推奨）
+
 （Excelに「class / title / page」列があり、PDFの論理ページ1が物理21ページ目なら --page_offset 20）
 
 python add_outline_from_table.py \
-  --input_pdf "病気が見える_小児科_OCR.pdf" \
-  --outline_file "病気が見える_小児科_アウトライン一覧.xlsx" \
-  --output_pdf "病気が見える_小児科_アウトライン付き.pdf" \
+  --input_pdf "input.pdf" \
+  --outline_file "outline.xlsx" \
+  --output_pdf "output.pdf" \
   --page_offset 20
 
 
