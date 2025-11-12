@@ -4,8 +4,11 @@ CSV/Excelのアウトライン表からPDFにアウトライン（しおり）�
 
 依存ライブラリのインストール
   pip install pandas pdfrw reportlab openpyxl
+  
   pip install pdfminer.six
+  
   pip install pdfrw
+  
   pip install reportlab
 
 
