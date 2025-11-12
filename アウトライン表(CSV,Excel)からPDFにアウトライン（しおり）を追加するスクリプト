@@ -24,6 +24,8 @@ CSV/Excelのアウトライン表からPDFにアウトライン（しおり）�
   必要に応じて CLASS_TO_LEVEL を編集してください。
 """
 
+# 以下のコードはadd_outline_from_excel.pyにまとめてあります。
+
 import argparse
 import pandas as pd
 from pathlib import Path
