@@ -18,7 +18,7 @@ CSV/Excelのアウトライン表からPDFにアウトライン（しおり）�
 
 （Excelに「class / title / page」列があり、PDFの論理ページ1が物理21ページ目なら --page_offset 20）
 
-python add_outline_from_table.py \
+python add_outline_from_excel.py \
   --input_pdf "input.pdf" \
   --outline_file "outline.xlsx" \
   --output_pdf "output.pdf" \
@@ -26,7 +26,7 @@ python add_outline_from_table.py \
 
 
 CSVで渡す場合
-python add_outline_from_table.py \
+python add_outline_from_excel.py \
   --input_pdf "in.pdf" \
   --outline_file "outline.csv" \
   --output_pdf "out.pdf"
