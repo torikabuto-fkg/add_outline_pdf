@@ -3,6 +3,9 @@ CSV/Excelのアウトライン表からPDFにアウトライン（しおり）�
 
 依存:
   pip install pandas pdfrw reportlab openpyxl
+  pip install pdfminer.six
+  pip install pdfrw
+  pip install reportlab
 
 使い方:
   python add_outline_from_table.py \
