@@ -12,8 +12,6 @@ from reportlab.pdfgen.canvas import Canvas
 CLASS_TO_LEVEL = {
     "章": 1,
     "節": 2,
-    "supplement": 3,
-    "column": 3,
 }
 
 # 安全側の正規化（未知クラスは下位レベルに寄せる）
