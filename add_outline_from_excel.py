@@ -52,6 +52,9 @@ def load_outline_table(path: Path, sheet_name: str = "", page_col="page", class_
 def to_outlines(df: pd.DataFrame, page_offset: int = 0):
     """
     DataFrame → [(title, page_index(0始まり), level), ...]
+    
+    class列の値が数字の場合はそのレベルを使用し、
+    文字列の場合はCLASS_TO_LEVELから対応するレベルを取得します。
     """
     outlines = []
     for _, row in df.iterrows():
@@ -59,9 +62,15 @@ def to_outlines(df: pd.DataFrame, page_offset: int = 0):
         title = row["title"]
         logical_page = int(row["page"])
 
-        # クラス → レベル
-        level = CLASS_TO_LEVEL.get(klass, 3)
-        level = normalize_level(level)
+        # クラス → レベルの判定
+        # まず数字として解釈を試みる
+        try:
+            level = int(klass)
+            level = normalize_level(level)
+        except (ValueError, TypeError):
+            # 数字でない場合は文字列としてマッピング辞書から取得
+            level = CLASS_TO_LEVEL.get(str(klass).strip(), 3)
+            level = normalize_level(level)
 
         # PDFの0始まりページindexへ換算
         # 例: 論理ページ=1, offset=+20 → 実物index = 1-1+20 = 20
